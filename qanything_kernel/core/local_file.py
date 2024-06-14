@@ -72,7 +72,7 @@ class LocalFile:
                 file_dir = os.path.join(upload_path, self.file_id)
                 os.makedirs(file_dir, exist_ok=True)
                 self.file_path = os.path.join(file_dir, self.file_name)
-                self.file_content = file.body
+                self.file_content = file if isinstance(file, bytes) else file.body
             with open(self.file_path, "wb+") as f:
                 f.write(self.file_content)
         debug_logger.info(f'success init localfile {self.file_name}')

@@ -25,6 +25,168 @@ __all__ = ["new_knowledge_base", "upload_files", "list_kbs", "list_docs", "delet
 
 INVALID_USER_ID = f"fail, Invalid user_id: . user_id 必须只含有字母，数字和下划线且字母开头"
 
+from pdf2image import convert_from_bytes
+from paddleocr import PaddleOCR
+from docx import Document
+import io
+import sanic
+import asyncio
+import time
+from pdfminer.high_level import extract_pages
+from pdfminer.layout import LTTextContainer
+import warnings
+import PyPDF2
+from PyPDF2.errors import PdfReadWarning
+
+async def check_and_ocr_pdf(data, local_doc_qa):
+    if data[:5] != b'%PDF-':
+        return False, data
+    
+#     text = ""
+#     pdf_io = io.BytesIO(data)
+#     for page_layout in extract_pages(pdf_io):
+#         for element in page_layout:
+#             if isinstance(element, LTTextContainer):
+#                 text += element.get_text()
+#                 if(len(text) > 200):
+#                     break
+
+#     prompt = """
+# **任务**：判断下列文本是否是乱码。
+
+# **定义**：
+# - **乱码**：文本中包含大量不可读字符、无意义的符号或杂乱无章的字符序列，无法识别出合理的词语和句子结构。
+# - **正常文本**：文本中包含清晰可辨的词语和句子，具备合理的结构和语义。
+
+# **乱码示例**：
+# ---
+# !"# $%&’’$&($
+# ) (*
+# !"#$
+# +,
+# %&’()*+(,-./012
+# !"# $ !"#$%& !’(&)
+# (,-..%3456789:;
+# < ! =>$?@
+# "-.-/ 0.-01-23 0-4 14055-6 623142/ 0712801-23 9:91;8 !
+# <041 => "235-?7401-23
+# ’"&"*&’*’+ AB
+# ’"&&*"!*"& CD
+# !"#$%&’ A B
+# 4!!5
+# "#"$!"#$%&##"&"
+# "#"$!"#$%&##"&"
+# "#"$!"#$%&##"&"
+# "#"$!"#$%&##"&"
+# "#"$!"#$%&##"&"
+# "#"$!"#$%&##"&"
+# ! " # $ % & ’ $ ( ) *
+# ---
+
+# **正常文本示例**：
+# ---
+# ICS   03.220.50
+# CCS   V 54
+# 中 华 人 民 共 和 国 民 用 航 空 行 业 标 准
+# MH
+# MH/T 4029.2—2024
+# 代替MH/T 4029.2—2012
+# 民用航空空中交通管制自动化系统
+# 第 2 部分：技术要求
+# Civil aviation air traffic control automation system－
+# Part 2: Technical requirement
+# MH/T 4029.2—2024
+# MH/T 4029.2—2024
+# MH/T 4029.2—2024
+# MH/T 4029.2—2024
+# MH/T 4029.2—2024
+# MH/T 4029.2—2024
+# MH/T 4029.2—2024
+# MH/T 4029.2—2024
+# MH/T 4029.2—2024
+# MH/T 4029.2—2024
+# MH/T 4029.2—2024
+# MH/T 4029.2—2024
+# 5.6.3.4.4  区域侵入告警输出信息应完整，应包括系统航迹的呼号（未相关时为二次雷达应答机代码）、
+# 区域标识等。
+# MH/T 4029.2—2024
+# 5.7.11  系统应支持在线设置/修改跑道运行模式、跑道关闭、跑道间隔、MF 点间隔、延误分配策略、
+# 延误吸纳能力、等待区容量、航班间隔、航班优先级、计算着陆时刻等参数。
+# MH/T 4029.2—2024
+# MH/T 4029.2—2024
+# MH/T 4029.2—2024
+# MH/T 4029.2—2024
+# MH/T 4029.2—2024
+# 参 考 文 献
+
+# ---
+
+# **请判断以下文本是否是乱码**：
+# ---
+# {context}
+# ---
+
+# **回答**：只能回答 "是" 或 "否"。
+# """.format(context = text)
+
+#     responce = ""
+#     async for value in local_doc_qa.llm.generatorAnswer(prompt):
+#         responce = value.history[-1][-1]
+
+#     num = 0
+#     while len(responce) == 0 and num < 50:
+#         time.sleep(0.1)
+#         num = num + 1
+
+#     debug_logger.info("%s %d", responce, num)
+#     if(responce[0] == "否"):
+#         return False, data
+
+    warnings.simplefilter('error', PdfReadWarning)
+    pdf_reader = PyPDF2.PdfReader(io.BytesIO(data))
+    if len(pdf_reader.pages)>0:
+        try:
+            pdf_reader.pages[0].extract_text()
+            return False, data
+        except PdfReadWarning:
+            # 初始化 PaddleOCR
+            ocr = PaddleOCR(use_angle_cls=True, lang='ch')
+
+            # 将 PDF 页转换为图像
+            images = convert_from_bytes(data)
+
+            # 创建一个新的 Word 文档
+            doc = Document()
+
+            # 处理每一页的图像
+            for i, image in enumerate(images):
+                # 将图像保存为临时文件
+                image_path = f'temp_page_{i}.png'
+                image.save(image_path, 'PNG')
+
+                # 使用 PaddleOCR 进行 OCR 识别
+                result = ocr.ocr(image_path, cls=True)
+
+                # 将识别结果写入 Word 文档
+                for line in result:
+                    if line is not None:
+                        for word_info in line:
+                            line_text = word_info[1][0] if isinstance(word_info[1], tuple) else word_info[1]
+                            # 确保 line_text 是字符串
+                            if not isinstance(line_text, str):
+                                line_text = str(line_text)
+                            doc.add_paragraph(line_text)
+
+                # 删除临时图像文件
+                os.remove(image_path)
+
+            # 将 Word 文档保存到字节流中
+            byte_stream = io.BytesIO()
+            doc.save(byte_stream)
+            byte_stream.seek(0)
+            doc_bytes = byte_stream.getvalue()
+
+            return True, doc_bytes
 
 async def new_knowledge_base(req: request):
     local_doc_qa: LocalDocQA = req.app.ctx.local_doc_qa
@@ -135,6 +297,12 @@ async def upload_files(req: request):
     timestamp = now.strftime("%Y%m%d%H%M")
 
     for file, file_name in zip(files, file_names):
+        if isinstance(file, sanic.request.form.File):
+            changed, file = await check_and_ocr_pdf(file.body, local_doc_qa)
+            if changed:
+                file_name = file_name[:-4] + ".docx"
+                debug_logger.info("change into " + file_name)
+
         if file_name in exist_file_names:
             continue
         file_id, msg = local_doc_qa.mysql_client.add_file(user_id, kb_id, file_name, timestamp)
